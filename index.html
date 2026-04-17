@@ -412,7 +412,9 @@
         const perf = d.speed || 1;
         // ALGORITHME CORE: score = distance + (charge × 2) − performance
         const score = dist + (load * 2) - perf;
-        if (score < bestScore) { bestScore = score; best = { id, ...d, _dist: dist.toFixed(1), _score: bestScore }; }
+        // Guard: NaN score (missing coords) — still prefer this driver over no driver
+        const effectiveScore = isNaN(score) ? 999 : score;
+        if (effectiveScore < bestScore) { bestScore = effectiveScore; best = { id, ...d, _dist: isNaN(dist) ? '?' : dist.toFixed(1), _score: bestScore }; }
       });
       return best;
     }
@@ -426,6 +428,14 @@
 
         const order = _cache.orders[orderId];
         if (!order || order.assignedTo || order.status !== 'prete') return;
+
+        // Customer app doesn't send lat/lng — add them from zone if missing
+        if (!order.lat || !order.lng) {
+          const zc = ZONE_COORDS[order.zone];
+          order.lat = zc ? zc.lat : 5.340;
+          order.lng = zc ? zc.lng : -4.010;
+          _fbdb.ref('orders/' + orderId).update({ lat: order.lat, lng: order.lng });
+        }
 
         const best = findBestDriver(order, drivers);
         if (!best) {
