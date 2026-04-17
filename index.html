@@ -313,32 +313,65 @@
   <!-- TOAST -->
   <div class="toast" id="toast"></div>
 
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
   <script>
     /* ============================================================
-       SHARED DB
+       FIREBASE BACKEND
        ============================================================ */
-    const DB_KEY = 'troprapide_delivery';
+    const FIREBASE_CONFIG = {
+      apiKey: "AIzaSyD0FL4ua8NUWKfwu_gGUL5TI1RkiNbBZnU",
+      authDomain: "troprapide-821a7.firebaseapp.com",
+      databaseURL: "https://troprapide-821a7-default-rtdb.firebaseio.com",
+      projectId: "troprapide-821a7"
+    };
+    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
+    const _fbdb = firebase.database();
+
+    let _cache = { orders: {}, drivers: {}, log: [], revenue: 0 };
+
     const SEED_DRIVERS = {
       'd1': { name: 'Ali Koné', avatar: '🏍️', lat: 5.370, lng: -3.980, status: 'available', speed: 1.2, activeOrders: 0 },
       'd2': { name: 'Brice Yao', avatar: '🛵', lat: 5.300, lng: -4.050, status: 'available', speed: 1.0, activeOrders: 0 },
       'd3': { name: 'Cédric Ama', avatar: '🏍️', lat: 5.352, lng: -4.020, status: 'available', speed: 1.5, activeOrders: 0 }
     };
 
-    function getDB() {
-      try {
-        const d = JSON.parse(localStorage.getItem(DB_KEY));
-        if (!d) return { orders: {}, drivers: structuredClone(SEED_DRIVERS), log: [], revenue: 0 };
-        if (!d.drivers || Object.keys(d.drivers).length === 0) d.drivers = structuredClone(SEED_DRIVERS);
-        return d;
-      } catch (e) { return { orders: {}, drivers: structuredClone(SEED_DRIVERS), log: [], revenue: 0 }; }
+    const ZONE_COORDS = {
+      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
+      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
+      'Yopougon': { lat: 5.350, lng: -4.070 }, 'Adjamé': { lat: 5.360, lng: -4.025 }
+    };
+
+    function normalizeOrder(id, o) {
+      if (o.total == null && o.amount != null) o.total = Number(o.amount);
+      if (o.address == null && o.adresse != null) o.address = o.adresse;
+      if (!o.restaurantLat) { o.restaurantLat = 5.340; o.restaurantLng = -4.010; }
+      if (!o.lat && o.zone && ZONE_COORDS[o.zone]) {
+        const zc = ZONE_COORDS[o.zone];
+        o.lat = parseFloat((zc.lat + (Math.random() * 0.01 - 0.005)).toFixed(5));
+        o.lng = parseFloat((zc.lng + (Math.random() * 0.01 - 0.005)).toFixed(5));
+        _fbdb.ref('orders/' + id).update({ lat: o.lat, lng: o.lng, restaurantLat: o.restaurantLat, restaurantLng: o.restaurantLng });
+      }
+      return o;
     }
-    function saveDB(db) { localStorage.setItem(DB_KEY, JSON.stringify(db)); }
+
+    function getDB() { return _cache; }
+
+    function saveDB(data) {
+      _cache = data;
+      const updates = {};
+      Object.entries(data.orders || {}).forEach(([id, o]) => { updates['orders/' + id] = o; });
+      Object.entries(data.drivers || {}).forEach(([id, d]) => { updates['livreurs/' + id] = d; });
+      if (Object.keys(updates).length > 0) _fbdb.ref().update(updates);
+    }
+
     /* XSS sanitization */
     function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
+
     function addLog(msg) {
-      const db = getDB(); db.log = db.log || [];
-      db.log.unshift({ time: Date.now(), msg }); if (db.log.length > 80) db.log = db.log.slice(0, 80);
-      saveDB(db);
+      _cache.log = _cache.log || [];
+      _cache.log.unshift({ time: Date.now(), msg });
+      if (_cache.log.length > 80) _cache.log = _cache.log.slice(0, 80);
     }
 
     /* ============================================================
@@ -545,11 +578,6 @@
       'Poisson braisé + Alloco', 'Kedjenou de poulet'
     ];
     const DEMO_ZONES = ['Cocody', 'Koumassi', 'Treichville', 'Plateau', 'Yopougon'];
-    const ZONE_COORDS = {
-      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
-      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
-      'Yopougon': { lat: 5.350, lng: -4.070 }
-    };
 
     let demoTimer = null;
     function startDemoMode() {
@@ -605,33 +633,42 @@
       } catch (e) { }
     }
     function checkNewOrders() {
-      const db = getDB();
-      const orders = db.orders || {};
+      const orders = _cache.orders || {};
       let hasNew = false;
       Object.keys(orders).forEach(id => {
-        if (!_knownOrderIds.has(id) && orders[id].status === 'nouvelle') {
-          hasNew = true;
-        }
+        if (!_knownOrderIds.has(id) && orders[id].status === 'nouvelle') hasNew = true;
         _knownOrderIds.add(id);
       });
       if (hasNew) playBeep();
     }
 
-    // Listen for cross-tab updates
-    window.addEventListener('storage', e => { if (e.key === DB_KEY) { checkNewOrders(); renderKDS(); } });
+    /* ── FIREBASE LISTENERS (remplace localStorage + polling) ── */
+    let _firstOrderLoad = true;
 
-    // Poll every 3s
-    setInterval(() => { checkNewOrders(); renderKDS(); }, 3000);
+    _fbdb.ref('orders').on('value', snap => {
+      const orders = snap.val() || {};
+      Object.keys(orders).forEach(id => normalizeOrder(id, orders[id]));
+      _cache.orders = orders;
+      if (_firstOrderLoad) {
+        // On startup: mark existing orders as known so we don't beep for them
+        Object.keys(orders).forEach(id => _knownOrderIds.add(id));
+        _firstOrderLoad = false;
+      } else {
+        checkNewOrders();
+      }
+      renderKDS();
+    });
 
-    // Initial render
-    Object.keys((getDB().orders || {})).forEach(id => _knownOrderIds.add(id));
-    renderKDS();
-
-    // Start demo mode after 5s if no orders
-    setTimeout(() => {
-      const db = getDB();
-      if (Object.keys(db.orders || {}).length === 0) startDemoMode();
-    }, 5000);
+    _fbdb.ref('livreurs').on('value', snap => {
+      const drivers = snap.val();
+      if (!drivers || Object.keys(drivers).length === 0) {
+        _fbdb.ref('livreurs').set(SEED_DRIVERS);
+        _cache.drivers = structuredClone(SEED_DRIVERS);
+      } else {
+        _cache.drivers = drivers;
+      }
+      renderKDS();
+    });
   </script>
 </body>
 
