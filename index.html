@@ -355,6 +355,25 @@
       return o;
     }
 
+    function normalizeDriver(id, d) {
+      // Handle French field names from real Firebase data
+      if (!d.name && d.nom) d.name = d.nom;
+      if (!d.name && d.prenom) d.name = (d.prenom + ' ' + (d.nom || '')).trim();
+      if (!d.name) d.name = 'Livreur #' + String(id).slice(-4);
+      if (!d.avatar) d.avatar = '🏍️';
+      // Ensure GPS coords exist
+      if (!d.lat) d.lat = parseFloat((5.340 + (Math.random() * 0.06 - 0.03)).toFixed(5));
+      if (!d.lng) d.lng = parseFloat((-4.010 + (Math.random() * 0.06 - 0.03)).toFixed(5));
+      if (!d.speed) d.speed = 1.0;
+      if (d.activeOrders == null) d.activeOrders = 0;
+      // Normalize status (French → English)
+      if (!d.status && d.statut) d.status = d.statut;
+      if (['disponible', 'actif', 'libre', 'on', 'active'].includes(String(d.status).toLowerCase())) d.status = 'available';
+      if (['occupé', 'occupe', 'en_mission', 'busy_', 'off'].includes(String(d.status).toLowerCase())) d.status = 'busy';
+      if (!d.status) d.status = 'available';
+      return d;
+    }
+
     function getDB() { return _cache; }
 
     function saveDB(data) {
@@ -387,7 +406,7 @@
     function findBestDriver(order, drivers) {
       let best = null, bestScore = Infinity;
       Object.entries(drivers).forEach(([id, d]) => {
-        if (d.status !== 'available') return;
+        if (d.status !== 'available' && d.status !== 'disponible') return;
         const dist = getDistance(order.lat, order.lng, d.lat, d.lng);
         const load = d.activeOrders || 0;
         const perf = d.speed || 1;
@@ -660,12 +679,21 @@
     });
 
     _fbdb.ref('livreurs').on('value', snap => {
-      const drivers = snap.val();
-      if (!drivers || Object.keys(drivers).length === 0) {
+      const rawDrivers = snap.val();
+      if (!rawDrivers || Object.keys(rawDrivers).length === 0) {
         _fbdb.ref('livreurs').set(SEED_DRIVERS);
         _cache.drivers = structuredClone(SEED_DRIVERS);
       } else {
-        _cache.drivers = drivers;
+        const normalized = {};
+        const updates = {};
+        Object.entries(rawDrivers).forEach(([id, d]) => {
+          const before = JSON.stringify(d);
+          normalizeDriver(id, d);
+          if (JSON.stringify(d) !== before) updates['livreurs/' + id] = d;
+          normalized[id] = d;
+        });
+        _cache.drivers = normalized;
+        if (Object.keys(updates).length > 0) _fbdb.ref().update(updates);
       }
       renderKDS();
     });
