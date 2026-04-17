@@ -682,10 +682,7 @@
 
     _fbdb.ref('livreurs').on('value', snap => {
       const rawDrivers = snap.val();
-      if (!rawDrivers || Object.keys(rawDrivers).length === 0) {
-        _fbdb.ref('livreurs').set(SEED_DRIVERS);
-        _cache.drivers = structuredClone(SEED_DRIVERS);
-      } else {
+      if (rawDrivers && Object.keys(rawDrivers).length > 0) {
         const normalized = {};
         const updates = {};
         Object.entries(rawDrivers).forEach(([id, d]) => {
