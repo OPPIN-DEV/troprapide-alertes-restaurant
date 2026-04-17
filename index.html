@@ -418,34 +418,36 @@
     }
 
     function autoDispatch(orderId) {
-      const db = getDB();
-      const order = db.orders[orderId];
-      if (!order || order.assignedTo || order.status !== 'prete') return;
+      // Always fetch fresh driver data directly from Firebase — never rely on cache
+      _fbdb.ref('livreurs').once('value').then(snap => {
+        const rawDrivers = snap.val() || {};
+        const drivers = {};
+        Object.entries(rawDrivers).forEach(([id, d]) => { normalizeDriver(id, d); drivers[id] = d; });
 
-      const best = findBestDriver(order, db.drivers);
-      if (!best) {
-        showToast(`❌ Aucun livreur dispo pour #${orderId.slice(-4)}`, '#EF4444');
-        addLog(`❌ Aucun livreur disponible — commande #${orderId.slice(-4)} en attente`);
-        return;
-      }
+        const order = _cache.orders[orderId];
+        if (!order || order.assignedTo || order.status !== 'prete') return;
 
-      db.orders[orderId] = {
-        ...order,
-        assignedTo: best.id,
-        assignedName: best.name,
-        status: 'en-route',
-        dispatchedAt: Date.now()
-      };
-      db.drivers[best.id] = {
-        ...db.drivers[best.id],
-        status: 'busy',
-        activeOrders: (best.activeOrders || 0) + 1,
-        currentOrder: orderId
-      };
-      addLog(`⚡ AUTO-DISPATCH: #${orderId.slice(-4)} → ${best.name} (${best._dist} km | score ${best._score.toFixed(2)})`);
-      saveDB(db);
-      showToast(`⚡ Dispatch: #${orderId.slice(-4)} → ${best.name} (${best._dist}km)`, '#F5C800');
-      renderKDS();
+        const best = findBestDriver(order, drivers);
+        if (!best) {
+          showToast(`❌ Aucun livreur dispo pour #${orderId.slice(-4)}`, '#EF4444');
+          addLog(`❌ Aucun livreur disponible — commande #${orderId.slice(-4)} en attente`);
+          return;
+        }
+
+        const now = Date.now();
+        _fbdb.ref().update({
+          [`orders/${orderId}/assignedTo`]: best.id,
+          [`orders/${orderId}/assignedName`]: best.name,
+          [`orders/${orderId}/status`]: 'en-route',
+          [`orders/${orderId}/dispatchedAt`]: now,
+          [`livreurs/${best.id}/status`]: 'busy',
+          [`livreurs/${best.id}/activeOrders`]: (best.activeOrders || 0) + 1,
+          [`livreurs/${best.id}/currentOrder`]: orderId
+        });
+
+        addLog(`⚡ AUTO-DISPATCH: #${orderId.slice(-4)} → ${best.name} (${best._dist} km)`);
+        showToast(`⚡ Dispatch: #${orderId.slice(-4)} → ${best.name} (${best._dist}km)`, '#F5C800');
+      });
     }
 
     /* ============================================================
