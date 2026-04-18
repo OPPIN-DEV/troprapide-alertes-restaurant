@@ -197,16 +197,8 @@ function updateStatus(id, status){
 }
 
 function markReady(id){
-  rtdb.ref('/orders/'+id).update({ status:'prete', readyAt: Date.now() })
-    .then(()=> showToast(`🟢 #${id.slice(-4)} PRÊTE — En attente de dispatch`, '#22C55E'))
-    .catch(e=> showToast('Erreur: '+e.message, '#EF4444'));
-}
-
-/* Dispatch button: only sets status to 'attribue', nothing else.
-   Driver assignment is handled exclusively by the admin. */
-function dispatchOrder(id){
-  rtdb.ref('/orders/'+id).update({ status:'attribue', dispatchedAt: Date.now() })
-    .then(()=> showToast(`📲 #${id.slice(-4)} transmis au dispatch`, '#3B82F6'))
+  rtdb.ref('/orders/'+id).update({ status:'attribue', readyAt: Date.now() })
+    .then(()=> showToast(`📲 #${id.slice(-4)} PRÊTE — Livreur en attente`, '#3B82F6'))
     .catch(e=> showToast('Erreur: '+e.message, '#EF4444'));
 }
 
@@ -257,8 +249,6 @@ function renderKDS(orders){
             <button class="kds-btn btn-accept" onclick="updateStatus('${key}','acceptee')">✅ ACCEPTER</button>` : ''}
           ${o.status==='acceptee' ? `
             <button class="kds-btn btn-ready" onclick="markReady('${key}')">🟢 COMMANDE PRÊTE</button>` : ''}
-          ${o.status==='prete' && !o.assignedTo ? `
-            <button class="kds-btn btn-ready" style="background:var(--blue);" onclick="dispatchOrder('${key}')">📲 ENVOYER AU DISPATCH</button>` : ''}
           ${isAttribue ? `
             <div style="text-align:center;width:100%;color:var(--blue);font-weight:700;font-size:.85rem;">
               📲 Livreur en attente de confirmation
