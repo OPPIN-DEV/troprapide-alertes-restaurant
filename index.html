@@ -567,23 +567,31 @@
       } catch (e) { }
     }
 
-    /* Firebase real-time listener — replaces localStorage + storage events + polling */
+    /* Firebase real-time listeners — separate paths */
     let _initialLoad = true;
-    rtdb.ref('/').on('value', snap => {
-      state = snap.val() || { orders: {}, drivers: {}, log: {}, revenue: 0 };
 
+    rtdb.ref('/orders').on('value', snap => {
+      state.orders = snap.val() || {};
       if (!_initialLoad) {
         let hasNew = false;
-        Object.entries(state.orders || {}).forEach(([id, o]) => {
+        Object.entries(state.orders).forEach(([id, o]) => {
           if (!_knownOrderIds.has(id) && o.status === 'nouvelle') { hasNew = true; }
         });
         if (hasNew) playBeep();
       }
-      Object.keys(state.orders || {}).forEach(id => _knownOrderIds.add(id));
+      Object.keys(state.orders).forEach(id => _knownOrderIds.add(id));
       _initialLoad = false;
-
       renderKDS();
+    }, err => {
+      console.error('Firebase /orders error:', err.code);
+      document.getElementById('col-new').innerHTML =
+        `<p style="color:#EF4444;text-align:center;padding:20px;font-size:.85rem;">❌ Erreur Firebase: ${err.code}</p>`;
     });
+
+    rtdb.ref('/drivers').on('value', snap => {
+      state.drivers = snap.val() || {};
+      renderKDS();
+    }, err => console.error('drivers:', err.code));
 
     // Start demo mode after 8s if no orders in Firebase
     setTimeout(() => {
