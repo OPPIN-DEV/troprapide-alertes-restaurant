@@ -5,6 +5,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KDS — Cuisine TropRapide</title>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.0/firebase-database-compat.js"></script>
   <style>
     :root {
       --bg: #000;
@@ -313,22 +315,23 @@
   <!-- TOAST -->
   <div class="toast" id="toast"></div>
 
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
   <script>
     /* ============================================================
-       FIREBASE BACKEND
+       FIREBASE CONFIGURATION
        ============================================================ */
-    const FIREBASE_CONFIG = {
+    const firebaseConfig = {
       apiKey: "AIzaSyD0FL4ua8NUWKfwu_gGUL5TI1RkiNbBZnU",
       authDomain: "troprapide-821a7.firebaseapp.com",
       databaseURL: "https://troprapide-821a7-default-rtdb.firebaseio.com",
       projectId: "troprapide-821a7"
     };
-    if (!firebase.apps.length) firebase.initializeApp(FIREBASE_CONFIG);
-    const _fbdb = firebase.database();
+    if (!firebase.apps.length) firebase.initializeApp(firebaseConfig);
+    const rtdb = firebase.database();
 
-    let _cache = { orders: {}, drivers: {}, log: [], revenue: 0 };
+    /* ============================================================
+       STATE (populated by Firebase real-time listener)
+       ============================================================ */
+    let state = { orders: {}, drivers: {}, log: {}, revenue: 0 };
 
     const SEED_DRIVERS = {
       'd1': { name: 'Ali Koné', avatar: '🏍️', lat: 5.370, lng: -3.980, status: 'available', speed: 1.2, activeOrders: 0 },
@@ -336,66 +339,13 @@
       'd3': { name: 'Cédric Ama', avatar: '🏍️', lat: 5.352, lng: -4.020, status: 'available', speed: 1.5, activeOrders: 0 }
     };
 
-    const ZONE_COORDS = {
-      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
-      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
-      'Yopougon': { lat: 5.350, lng: -4.070 }, 'Adjamé': { lat: 5.360, lng: -4.025 }
-    };
-
-    function normalizeOrder(id, o) {
-      if (o.total == null && o.amount != null) o.total = Number(o.amount);
-      if (o.address == null && o.adresse != null) o.address = o.adresse;
-      if (!o.restaurantLat) { o.restaurantLat = 5.340; o.restaurantLng = -4.010; }
-      if (!o.lat && o.zone && ZONE_COORDS[o.zone]) {
-        const zc = ZONE_COORDS[o.zone];
-        o.lat = parseFloat((zc.lat + (Math.random() * 0.01 - 0.005)).toFixed(5));
-        o.lng = parseFloat((zc.lng + (Math.random() * 0.01 - 0.005)).toFixed(5));
-        _fbdb.ref('orders/' + id).update({ lat: o.lat, lng: o.lng, restaurantLat: o.restaurantLat, restaurantLng: o.restaurantLng });
-      }
-      return o;
-    }
-
-    function normalizeDriver(id, d) {
-      // Handle French field names from real Firebase data
-      if (!d.name && d.nom) d.name = d.nom;
-      if (!d.name && d.prenom) d.name = (d.prenom + ' ' + (d.nom || '')).trim();
-      if (!d.name) d.name = 'Livreur #' + String(id).slice(-4);
-      if (!d.avatar) d.avatar = '🏍️';
-      // Ensure GPS coords exist
-      if (!d.lat) d.lat = parseFloat((5.340 + (Math.random() * 0.06 - 0.03)).toFixed(5));
-      if (!d.lng) d.lng = parseFloat((-4.010 + (Math.random() * 0.06 - 0.03)).toFixed(5));
-      if (!d.speed) d.speed = 1.0;
-      if (d.activeOrders == null) d.activeOrders = 0;
-      // Normalize status (French → English)
-      if (!d.status && d.statut) d.status = d.statut;
-      if (['disponible', 'actif', 'libre', 'on', 'active'].includes(String(d.status).toLowerCase())) d.status = 'available';
-      if (['occupé', 'occupe', 'en_mission', 'busy_', 'off'].includes(String(d.status).toLowerCase())) d.status = 'busy';
-      if (!d.status) d.status = 'available';
-      return d;
-    }
-
-    function getDB() { return _cache; }
-
-    function saveDB(data) {
-      _cache = data;
-      const updates = {};
-      Object.entries(data.orders || {}).forEach(([id, o]) => { updates['orders/' + id] = o; });
-      Object.entries(data.drivers || {}).forEach(([id, d]) => { updates['livreurs/' + id] = d; });
-      if (Object.keys(updates).length > 0) _fbdb.ref().update(updates);
-    }
-
     /* XSS sanitization */
     function esc(s) { return String(s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;'); }
 
-    function addLog(msg) {
-      _cache.log = _cache.log || [];
-      _cache.log.unshift({ time: Date.now(), msg });
-      if (_cache.log.length > 80) _cache.log = _cache.log.slice(0, 80);
-    }
+    function addLog(msg) { rtdb.ref('/log').push({ time: Date.now(), msg }); }
 
     /* ============================================================
        MOTEUR DISPATCH (intégré dans KDS)
-       Déclenché automatiquement quand une commande passe en "prete"
        ============================================================ */
     function getDistance(lat1, lng1, lat2, lng2) {
       const R = 6371, dLat = (lat2 - lat1) * Math.PI / 180, dLng = (lng2 - lng1) * Math.PI / 180;
@@ -405,59 +355,38 @@
 
     function findBestDriver(order, drivers) {
       let best = null, bestScore = Infinity;
+      const excluded = order.declinedBy ? Object.values(order.declinedBy) : [];
       Object.entries(drivers).forEach(([id, d]) => {
-        if (d.status !== 'available' && d.status !== 'disponible') return;
+        if (d.status !== 'available') return;
+        if (excluded.includes(id)) return;
         const dist = getDistance(order.lat, order.lng, d.lat, d.lng);
-        const load = d.activeOrders || 0;
-        const perf = d.speed || 1;
-        // ALGORITHME CORE: score = distance + (charge × 2) − performance
-        const score = dist + (load * 2) - perf;
-        // Guard: NaN score (missing coords) — still prefer this driver over no driver
-        const effectiveScore = isNaN(score) ? 999 : score;
-        if (effectiveScore < bestScore) { bestScore = effectiveScore; best = { id, ...d, _dist: isNaN(dist) ? '?' : dist.toFixed(1), _score: bestScore }; }
+        const score = dist + ((d.activeOrders || 0) * 2) - (d.speed || 1);
+        if (score < bestScore) { bestScore = score; best = { id, ...d, _dist: dist.toFixed(1), _score: bestScore }; }
       });
       return best;
     }
 
     function autoDispatch(orderId) {
-      // Always fetch fresh driver data directly from Firebase — never rely on cache
-      _fbdb.ref('livreurs').once('value').then(snap => {
-        const rawDrivers = snap.val() || {};
-        const drivers = {};
-        Object.entries(rawDrivers).forEach(([id, d]) => { normalizeDriver(id, d); drivers[id] = d; });
-
-        const order = _cache.orders[orderId];
-        if (!order || order.assignedTo || order.status !== 'prete') return;
-
-        // Customer app doesn't send lat/lng — add them from zone if missing
-        if (!order.lat || !order.lng) {
-          const zc = ZONE_COORDS[order.zone];
-          order.lat = zc ? zc.lat : 5.340;
-          order.lng = zc ? zc.lng : -4.010;
-          _fbdb.ref('orders/' + orderId).update({ lat: order.lat, lng: order.lng });
-        }
-
-        const best = findBestDriver(order, drivers);
-        if (!best) {
-          showToast(`❌ Aucun livreur dispo pour #${orderId.slice(-4)}`, '#EF4444');
-          addLog(`❌ Aucun livreur disponible — commande #${orderId.slice(-4)} en attente`);
-          return;
-        }
-
-        const now = Date.now();
-        _fbdb.ref().update({
-          [`orders/${orderId}/assignedTo`]: best.id,
-          [`orders/${orderId}/assignedName`]: best.name,
-          [`orders/${orderId}/status`]: 'en-route',
-          [`orders/${orderId}/dispatchedAt`]: now,
-          [`livreurs/${best.id}/status`]: 'busy',
-          [`livreurs/${best.id}/activeOrders`]: (best.activeOrders || 0) + 1,
-          [`livreurs/${best.id}/currentOrder`]: orderId
-        });
-
-        addLog(`⚡ AUTO-DISPATCH: #${orderId.slice(-4)} → ${best.name} (${best._dist} km)`);
-        showToast(`⚡ Dispatch: #${orderId.slice(-4)} → ${best.name} (${best._dist}km)`, '#F5C800');
-      });
+      const order = (state.orders || {})[orderId];
+      if (!order || order.assignedTo || order.status !== 'prete') return;
+      const drivers = state.drivers && Object.keys(state.drivers).length > 0 ? state.drivers : SEED_DRIVERS;
+      const best = findBestDriver(order, drivers);
+      if (!best) {
+        showToast(`❌ Aucun livreur dispo pour #${orderId.slice(-4)}`, '#EF4444');
+        addLog(`❌ Aucun livreur disponible — commande #${orderId.slice(-4)} en attente`);
+        return;
+      }
+      const updates = {};
+      updates[`/orders/${orderId}/assignedTo`] = best.id;
+      updates[`/orders/${orderId}/assignedName`] = best.name;
+      updates[`/orders/${orderId}/status`] = 'attribue';
+      updates[`/orders/${orderId}/dispatchedAt`] = Date.now();
+      updates[`/drivers/${best.id}/status`] = 'busy';
+      updates[`/drivers/${best.id}/activeOrders`] = (best.activeOrders || 0) + 1;
+      updates[`/drivers/${best.id}/currentOrder`] = orderId;
+      rtdb.ref().update(updates);
+      addLog(`⚡ AUTO-DISPATCH: #${orderId.slice(-4)} → ${best.name} (${best._dist} km | score ${best._score.toFixed(2)})`);
+      showToast(`⚡ Dispatch: #${orderId.slice(-4)} → ${best.name} (${best._dist}km)`, '#F5C800');
     }
 
     /* ============================================================
@@ -478,8 +407,7 @@
        RENDER KDS
        ============================================================ */
     function renderKDS() {
-      const db = getDB();
-      const orders = db.orders || {};
+      const orders = state.orders || {};
 
       const newCol = document.getElementById('col-new');
       const prepCol = document.getElementById('col-prep');
@@ -491,7 +419,6 @@
 
       let cntNew = 0, cntPrep = 0, cntReady = 0;
 
-      // Only show kitchen-relevant statuses (not en-route/livree)
       const kitchenOrders = Object.entries(orders)
         .filter(([, o]) => ['nouvelle', 'acceptee', 'prete'].includes(o.status))
         .sort((a, b) => (a[1].createdAt || 0) - (b[1].createdAt || 0));
@@ -506,42 +433,31 @@
 
         const card = `
       <div class="kds-card ${isUrgent ? 'urgente' : ''} ${o.status === 'prete' && o.assignedTo ? 'dispatch-done' : ''}">
-
         <div class="kds-header">
           <span class="kds-id">#${key.slice(-6).toUpperCase()}</span>
           <span class="kds-time ${isUrgent ? 'urgent' : ''}">${elapsed} min</span>
         </div>
-
         <div class="kds-items">${esc(o.items) || '—'}</div>
-
         <div class="kds-meta">
           <span>👤 ${esc(o.client) || '—'}</span>
           <span>📍 ${esc(o.zone) || '—'}</span>
           <span>💰 ${o.total ? o.total.toLocaleString('fr') + ' FCFA' : ''}</span>
         </div>
-
-        ${o.assignedTo ? `<div class="driver-tag">🏍️ ${esc(o.assignedName || o.assignedTo)} — En route</div>` : ''}
-
+        ${o.assignedTo ? `<div class="driver-tag">🏍️ ${esc(o.assignedName || o.assignedTo)} — ${o.status === 'attribue' ? 'En attente de réponse' : 'En route'}</div>` : ''}
         <div class="kds-actions">
           ${o.status === 'nouvelle'
             ? `<button class="kds-btn btn-cancel" onclick="updateStatus('${key}','annulee')">✕</button>
                <button class="kds-btn btn-accept" onclick="updateStatus('${key}','acceptee')">✅ ACCEPTER</button>`
-            : ''
-          }
+            : ''}
           ${o.status === 'acceptee'
             ? `<button class="kds-btn btn-ready" onclick="markReady('${key}')">🟢 COMMANDE PRÊTE</button>`
-            : ''
-          }
+            : ''}
           ${o.status === 'prete' && !o.assignedTo
             ? `<button class="kds-btn btn-ready" style="background:var(--orange);" onclick="autoDispatch('${key}')">⚡ DISPATCH MANUELLEMENT</button>`
-            : ''
-          }
+            : ''}
           ${o.status === 'prete' && o.assignedTo
-            ? `<div style="text-align:center;width:100%;color:var(--blue);font-weight:700;font-size:.85rem;">
-                 ✅ Livreur assigné — En route
-               </div>`
-            : ''
-          }
+            ? `<div style="text-align:center;width:100%;color:var(--blue);font-weight:700;font-size:.85rem;">✅ Livreur assigné — En route</div>`
+            : ''}
         </div>
       </div>`;
 
@@ -550,21 +466,24 @@
         if (o.status === 'prete') { readyCol.innerHTML += card; cntReady++; }
       });
 
-      // Column counts
       document.getElementById('count-new').textContent = cntNew > 0 ? cntNew : '';
       document.getElementById('count-prep').textContent = cntPrep > 0 ? cntPrep : '';
       document.getElementById('count-ready').textContent = cntReady > 0 ? cntReady : '';
-
-      // Header stats
       document.getElementById('h-new').textContent = cntNew;
       document.getElementById('h-prep').textContent = cntPrep;
       document.getElementById('h-ready').textContent = cntReady;
 
-      // Show en-route/delivered count in ready column
       const enRoute = Object.values(orders).filter(o => o.status === 'en-route').length;
+      const attribue = Object.values(orders).filter(o => o.status === 'attribue').length;
+      if (attribue > 0) {
+        readyCol.innerHTML += `
+      <div style="text-align:center;color:#A855F7;font-size:.8rem;padding:8px;border-top:1px solid var(--border);margin-top:4px;">
+        📲 ${attribue} commande(s) en attente d'un livreur
+      </div>`;
+      }
       if (enRoute > 0) {
         readyCol.innerHTML += `
-      <div style="text-align:center;color:var(--muted);font-size:.8rem;padding:10px;border-top:1px solid var(--border);margin-top:4px;">
+      <div style="text-align:center;color:var(--muted);font-size:.8rem;padding:8px;border-top:1px solid var(--border);margin-top:4px;">
         🔵 ${enRoute} commande(s) en route
       </div>`;
       }
@@ -574,34 +493,21 @@
        STATUS UPDATES
        ============================================================ */
     function updateStatus(id, status) {
-      const db = getDB();
-      if (!db.orders[id]) return;
-      db.orders[id].status = status;
-      db.orders[id].updatedAt = Date.now();
-      if (status === 'annulee') {
-        addLog(`❌ Commande #${id.slice(-4)} annulée par la cuisine`);
-      } else if (status === 'acceptee') {
-        addLog(`🍳 #${id.slice(-4)} acceptée — Préparation en cours`);
-      }
-      saveDB(db);
-      renderKDS();
+      if (!(state.orders || {})[id]) return;
+      rtdb.ref(`/orders/${id}`).update({ status, updatedAt: Date.now() });
+      if (status === 'annulee') addLog(`❌ Commande #${id.slice(-4)} annulée par la cuisine`);
+      else if (status === 'acceptee') addLog(`🍳 #${id.slice(-4)} acceptée — Préparation en cours`);
     }
 
-    // Mark ready + auto-dispatch
     function markReady(id) {
-      const db = getDB();
-      if (!db.orders[id]) return;
-      db.orders[id].status = 'prete';
-      db.orders[id].readyAt = Date.now();
+      if (!(state.orders || {})[id]) return;
+      rtdb.ref(`/orders/${id}`).update({ status: 'prete', readyAt: Date.now() });
       addLog(`🟢 #${id.slice(-4)} prête — Dispatch automatique lancé`);
-      saveDB(db);
-      renderKDS();
-      // Auto-dispatch with small delay (kitchen confirmation feel)
       setTimeout(() => autoDispatch(id), 800);
     }
 
     /* ============================================================
-       SIMULATE NEW ORDER (for demo — every 30s)
+       DEMO MODE: simule nouvelles commandes (écrit dans Firebase)
        ============================================================ */
     const DEMO_CLIENTS = ['Kouamé', 'Fatou', 'Pierre', 'Aminata', 'Roland', 'Sylvie'];
     const DEMO_ITEMS = [
@@ -609,19 +515,22 @@
       'Poisson braisé + Alloco', 'Kedjenou de poulet'
     ];
     const DEMO_ZONES = ['Cocody', 'Koumassi', 'Treichville', 'Plateau', 'Yopougon'];
+    const ZONE_COORDS = {
+      'Cocody': { lat: 5.370, lng: -3.980 }, 'Koumassi': { lat: 5.290, lng: -4.010 },
+      'Treichville': { lat: 5.300, lng: -4.005 }, 'Plateau': { lat: 5.320, lng: -4.020 },
+      'Yopougon': { lat: 5.350, lng: -4.070 }
+    };
 
     let demoTimer = null;
     function startDemoMode() {
       if (demoTimer) return;
       demoTimer = setInterval(() => {
-        const db = getDB();
-        // Only inject if less than 5 pending orders
-        const pending = Object.values(db.orders || {}).filter(o => ['nouvelle', 'acceptee'].includes(o.status)).length;
+        const pending = Object.values(state.orders || {}).filter(o => ['nouvelle', 'acceptee'].includes(o.status)).length;
         if (pending >= 5) return;
         const zone = DEMO_ZONES[Math.floor(Math.random() * DEMO_ZONES.length)];
         const z = ZONE_COORDS[zone];
         const id = 'cmd' + Date.now();
-        db.orders[id] = {
+        rtdb.ref(`/orders/${id}`).set({
           client: DEMO_CLIENTS[Math.floor(Math.random() * DEMO_CLIENTS.length)],
           items: DEMO_ITEMS[Math.floor(Math.random() * DEMO_ITEMS.length)],
           total: 3000 + Math.floor(Math.random() * 2000),
@@ -630,23 +539,17 @@
           restaurantLat: 5.340, restaurantLng: -4.010,
           assignedTo: null, assignedName: null,
           createdAt: Date.now()
-        };
-        db.log = db.log || [];
-        db.log.unshift({ time: Date.now(), msg: `📱 Nouvelle commande simulée — ${zone}` });
-        saveDB(db);
-        renderKDS();
+        });
+        addLog(`📱 Nouvelle commande simulée — ${zone}`);
         showToast('📱 Nouvelle commande reçue !', '#F97316');
-      }, 45000); // new order every 45s in demo mode
+      }, 45000);
     }
 
     /* ============================================================
        CLOCK + INIT
        ============================================================ */
-    setInterval(() => {
-      document.getElementById('time').textContent = new Date().toLocaleTimeString('fr');
-    }, 1000);
+    setInterval(() => { document.getElementById('time').textContent = new Date().toLocaleTimeString('fr'); }, 1000);
 
-    /* ── BIP SONORE ── */
     let _knownOrderIds = new Set();
     function playBeep() {
       try {
@@ -663,49 +566,29 @@
         if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
       } catch (e) { }
     }
-    function checkNewOrders() {
-      const orders = _cache.orders || {};
-      let hasNew = false;
-      Object.keys(orders).forEach(id => {
-        if (!_knownOrderIds.has(id) && orders[id].status === 'nouvelle') hasNew = true;
-        _knownOrderIds.add(id);
-      });
-      if (hasNew) playBeep();
-    }
 
-    /* ── FIREBASE LISTENERS (remplace localStorage + polling) ── */
-    let _firstOrderLoad = true;
+    /* Firebase real-time listener — replaces localStorage + storage events + polling */
+    let _initialLoad = true;
+    rtdb.ref('/').on('value', snap => {
+      state = snap.val() || { orders: {}, drivers: {}, log: {}, revenue: 0 };
 
-    _fbdb.ref('orders').on('value', snap => {
-      const orders = snap.val() || {};
-      Object.keys(orders).forEach(id => normalizeOrder(id, orders[id]));
-      _cache.orders = orders;
-      if (_firstOrderLoad) {
-        // On startup: mark existing orders as known so we don't beep for them
-        Object.keys(orders).forEach(id => _knownOrderIds.add(id));
-        _firstOrderLoad = false;
-      } else {
-        checkNewOrders();
-      }
-      renderKDS();
-    });
-
-    _fbdb.ref('livreurs').on('value', snap => {
-      const rawDrivers = snap.val();
-      if (rawDrivers && Object.keys(rawDrivers).length > 0) {
-        const normalized = {};
-        const updates = {};
-        Object.entries(rawDrivers).forEach(([id, d]) => {
-          const before = JSON.stringify(d);
-          normalizeDriver(id, d);
-          if (JSON.stringify(d) !== before) updates['livreurs/' + id] = d;
-          normalized[id] = d;
+      if (!_initialLoad) {
+        let hasNew = false;
+        Object.entries(state.orders || {}).forEach(([id, o]) => {
+          if (!_knownOrderIds.has(id) && o.status === 'nouvelle') { hasNew = true; }
         });
-        _cache.drivers = normalized;
-        if (Object.keys(updates).length > 0) _fbdb.ref().update(updates);
+        if (hasNew) playBeep();
       }
+      Object.keys(state.orders || {}).forEach(id => _knownOrderIds.add(id));
+      _initialLoad = false;
+
       renderKDS();
     });
+
+    // Start demo mode after 8s if no orders in Firebase
+    setTimeout(() => {
+      if (Object.keys(state.orders || {}).length === 0) startDemoMode();
+    }, 8000);
   </script>
 </body>
 
