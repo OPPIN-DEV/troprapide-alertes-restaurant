@@ -164,6 +164,31 @@ function showToast(msg, color='#F5C800'){
   toastTimer = setTimeout(()=> t.classList.remove('show'), 4000);
 }
 
+/* ── State ── */
+let _orders = {}, _livreurs = {};
+
+/* ── Distance helper ── */
+function getDistance(lat1,lon1,lat2,lon2){
+  const R=6371,dLat=(lat2-lat1)*Math.PI/180,dLon=(lon2-lon1)*Math.PI/180;
+  const a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+  return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));
+}
+
+/* ── Find best available livreur ── */
+function findBestDriver(order){
+  let best=null, bestScore=Infinity;
+  const excluded = order.declinedBy ? Object.values(order.declinedBy) : [];
+  Object.entries(_livreurs).forEach(([id,d])=>{
+    if(d.status!=='available') return;
+    if(excluded.includes(id)) return;
+    const dist=getDistance(order.lat||5.340,order.lng||-4.010,d.lat||5.340,d.lng||-4.010);
+    const load=d.activeOrders||0;
+    const score=dist+load*2;
+    if(score<bestScore){ bestScore=score; best={id,...d}; }
+  });
+  return best;
+}
+
 /* ── Beep ── */
 let _knownIds = new Set();
 function playBeep(){
@@ -197,8 +222,22 @@ function updateStatus(id, status){
 }
 
 function markReady(id){
-  rtdb.ref('/orders/'+id).update({ status:'attribue', readyAt: Date.now() })
-    .then(()=> showToast(`📲 #${id.slice(-4)} PRÊTE — Livreur en attente`, '#3B82F6'))
+  const order = _orders[id] || {};
+  const best = findBestDriver(order);
+  if(!best){
+    rtdb.ref('/orders/'+id).update({ status:'prete', readyAt: Date.now() })
+      .then(()=> showToast(`🟢 #${id.slice(-4)} PRÊTE — Aucun livreur dispo`, '#F97316'))
+      .catch(e=> showToast('Erreur: '+e.message, '#EF4444'));
+    return;
+  }
+  const updates = {};
+  updates[`/orders/${id}/status`]       = 'attribue';
+  updates[`/orders/${id}/readyAt`]      = Date.now();
+  updates[`/orders/${id}/assignedTo`]   = best.id;
+  updates[`/orders/${id}/assignedName`] = best.name;
+  updates[`/orders/${id}/dispatchedAt`] = Date.now();
+  rtdb.ref().update(updates)
+    .then(()=> showToast(`📲 #${id.slice(-4)} → ${best.name}`, '#3B82F6'))
     .catch(e=> showToast('Erreur: '+e.message, '#EF4444'));
 }
 
@@ -281,13 +320,17 @@ function renderKDS(orders){
    ============================================================ */
 rtdb.ref('/orders').on('value', snap => {
   setBadge('ok');
-  const orders = snap.val() || {};
-  renderKDS(orders);
+  _orders = snap.val() || {};
+  renderKDS(_orders);
 }, err => {
   setBadge('err');
   document.getElementById('col-new').innerHTML =
     `<div class="empty-col" style="color:var(--red);">❌ Erreur Firebase: ${err.code}</div>`;
 });
+
+rtdb.ref('/livreurs').on('value', snap => {
+  _livreurs = snap.val() || {};
+}, () => {});
 
 /* ── Clock ── */
 setInterval(()=>{
