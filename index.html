@@ -381,9 +381,9 @@
       updates[`/orders/${orderId}/assignedName`] = best.name;
       updates[`/orders/${orderId}/status`] = 'attribue';
       updates[`/orders/${orderId}/dispatchedAt`] = Date.now();
-      updates[`/drivers/${best.id}/status`] = 'busy';
-      updates[`/drivers/${best.id}/activeOrders`] = (best.activeOrders || 0) + 1;
-      updates[`/drivers/${best.id}/currentOrder`] = orderId;
+      updates[`/livreurs/${best.id}/status`] = 'busy';
+      updates[`/livreurs/${best.id}/activeOrders`] = (best.activeOrders || 0) + 1;
+      updates[`/livreurs/${best.id}/currentOrder`] = orderId;
       rtdb.ref().update(updates);
       addLog(`⚡ AUTO-DISPATCH: #${orderId.slice(-4)} → ${best.name} (${best._dist} km | score ${best._score.toFixed(2)})`);
       showToast(`⚡ Dispatch: #${orderId.slice(-4)} → ${best.name} (${best._dist}km)`, '#F5C800');
@@ -588,7 +588,7 @@
         `<p style="color:#EF4444;text-align:center;padding:20px;font-size:.85rem;">❌ Erreur Firebase: ${err.code}</p>`;
     });
 
-    rtdb.ref('/drivers').on('value', snap => {
+    rtdb.ref('/livreurs').on('value', snap => {
       state.drivers = snap.val() || {};
       renderKDS();
     }, err => console.error('drivers:', err.code));
